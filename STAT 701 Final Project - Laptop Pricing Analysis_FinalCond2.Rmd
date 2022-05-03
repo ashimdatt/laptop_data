@@ -1,0 +1,1020 @@
+---
+title: "STAT 701 Final Project - Laptop Pricing Analysis"
+author: "Mike Guibas, Ashim Datta"
+date: "4/7/2022"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    highlight: haddock
+    theme: lumen
+    toc: yes
+    toc_depth: 1
+    toc_float: yes
+geometry: margin=2cm
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE, results="hide"}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+# setting the seed and loading libraries
+set.seed(2022)
+
+library(googledrive,quietly=TRUE)
+library(MASS,quietly=TRUE)
+library(glmnet,quietly=TRUE)
+library(pROC,quietly=TRUE)
+library(rpart,quietly=TRUE)
+library(randomForest, quietly=TRUE)
+library(ranger, quietly=TRUE)
+library(caret, quietly=TRUE)
+library(factoextra, quietly=TRUE) # A special printing library for clustering analyses 
+library(devtools, quietly=TRUE)
+library(ggbiplot, quietly=TRUE)
+library(ggplot2, quietly=TRUE)
+library(zoo, quietly = TRUE)
+library(tm)
+library(cluster)
+library(SnowballC)
+library(xgboost)
+
+#install_github("vqv/ggbiplot", quietly=TRUE)
+
+#loading the file from G Drive using a share-able link
+laptop.data <- read.csv("https://drive.google.com/uc?export=download&id=1PUbhPc_PzaZKw1YTaUnGQWWkZwYtFvjg")
+```
+
+# Executive Summary
+
+## Key Findings
+
+We developed predictive models with the goal of predicting laptop
+price based on a bevvy of provided features. We applied clustering
+technique to learn more about different types of laptops within our data set.
+These clusters were later used as a feature along with various
+continuous and categorical variables to predict laptop price. We realized
+that the target variable (laptop price) was right-skewed so we applied a log
+transformation to the values before starting our analysis and modeling. We also
+grouped multiple levels within some categorical variables that contained only
+a few records to aid in model development. Model performance was primarily
+assessed based on R\^2 and RMSE in a validation data set which wasn't used 
+during training across different predictive modelling approaches.
+
+While we leveraged multiple predictive models, the Gradient Bossted Decision 
+Tree (GBDT) model ultimately proved to be the most accurate in predicting laptop 
+price. Our R\^2'S were fairly high for all models. However, our RMSE on the 
+actual prices was also fairly high whereas the RMSE on the log scale was fairly
+low. We believe we can further improve our models by applying various tuning 
+techniques and introducing additional data for training.
+
+Summary of Various R\^2's and RMSE of the best models are given below:
+
+**Best Linear Model:**
+
+- The R^2 value of stepAIC is 0.720237665739132.
+- The RMSE value of stepAIC is 298.724753420143.
+- The R^2 value of stepAIC in log scale is 0.826822166731771.
+- The RMSE value of stepAIC in log scale is 0.206641333801683.
+
+**Best Ensemble Model:**
+
+- The R^2 value for XGboost is 0.846570354015489.
+- The RMSE value of XGboost is 218.695470595025.
+- The R^2 value for XGboost in log scale is 0.886013879258513.
+- The RMSE value of XGboost in log scale is 0.165913472726158.
+
+## Interpretations
+
+Based on our validation metrics (R\^2 and RMSE), we observed the
+following across different modeling techniques :
+
+1.  **Linear models** : StepAIC was a slightly better stepwise approach
+    if we were to use a linear model to predict laptop prices. We also
+    found that though regularization using lasso could give us a fairly
+    good model (high R\^2 and low RMSE), it wasn't better than our
+    stepwise regression approach.
+2.  **Decision trees** : A basic tree and a pruned tree gave us worse
+    predictive models than linear models.
+3.  **Ensemble methods** : GBDT model trained using XGboost gave us the
+    best predictive model. Analysis of important variables across the
+    ensemble approaches such as GBDT and random process revealed that
+    our feature creation by clustering and our treatment of missing
+    values in display size were useful. We also noticed that three of the
+    top five variables in Random Forest and GBDT were different.
+4.  **Lastly**, our analysis using partial dependence suggested that
+    higher performance laptops (i.e laptops with higher RAM, SSD,
+    Graphic card) were priced higher. Intuitively, this makes sense. 
+
+## Implications
+
+Pricing products is a difficult problem for any e-commerce platform. The
+approach and findings here suggest that we can build a fairly accurate
+model to predict prices for a laptop based on common features. This type of 
+model can be used by platforms such as Flipkart to recommend prices to their 
+sellers to minimize friction on uploading their catalog to Flipkart. This is 
+also a great prototype to prove that we can use similar techniques to price any
+other category of products which can further help smaller sellers when
+they try to list products on an e-commerce platform.
+
+# Introduction to the Data Set
+
+Data source:
+<https://www.kaggle.com/datasets/kuchhbhi/latest-laptop-price-list>
+
+Using data scraped from Indian e-commerce company Flipkart on 3/29/22,
+we developed models that predict laptop price based on various
+available attributes.
+
+We know that that laptop price can often be driven by brand recognition
+(on top of actual performance attributes). For example, a basic
+macbook may command a higher price than a superior performing,
+custom-built computer due to Apple's brand recognition and amazing
+customer support. We also know that customers often care about features
+such has RAM, Graphic Card, Solid State Drive (ssd) etc. Additionally, online
+ratings and reviews can sometimes drive up a customer's willingness to pay 
+for a laptop. Our data set has strong representative coverage across all these
+important features.
+
+Our master data set, **laptop.data** has 896 observations and 23
+variables. Below is a description of the columns:
+
+```{r Data head, echo=FALSE, cache=TRUE}
+colnames(laptop.data)
+```
+
+All the column names are self-explanatory. For example "touchscreen"
+column indicates if the laptop has a touch screen. Similarly "weight"
+tells us about the weight of the laptop.
+
+Next, let us look at our data set a bit more closely to understand type of
+values each column has:
+
+```{r some initial analysis on the data,  echo=FALSE, cache=TRUE}
+#get the summary of the data
+
+summary(laptop.data)
+
+## remove useless character in the same columns
+laptop.data$ram_gb<-gsub(" GB GB","",as.character(laptop.data$ram_gb))
+laptop.data$ssd<-gsub(" GB","",as.character(laptop.data$ssd))
+laptop.data$hdd<-gsub(" GB","",as.character(laptop.data$hdd))
+laptop.data$os_bit<-gsub("-bit","",as.character(laptop.data$os_bit))
+
+#COMMENTING OUT TO SAVE SPACE
+# print("Table view of all categorical variables")
+# names=colnames(laptop.data)
+# 
+# for (x in 1:17) {
+#   print(paste("Table view for column: ", names[x]))
+#   print(table(laptop.data[,x]))
+# }
+```
+
+# Cleaning Up the Data and Creating New Features
+
+## Making the Data More Intuitive
+
+While our data set is relatively clean, we chose to further refine it to
+make analysis easier and more intuitive. For example, we removed
+redundant units / characters from columns (e.g., "GB" for ssd, hdd and
+"bit" for os_bit). We also identified missing data and reclassified
+those entries as "NA." The variables with the most NAs were model (95), processor_gnrtn (239),
+and display_size (332).
+
+```{r, echo=FALSE,  echo=FALSE, cache=TRUE}
+## visual inspection of the data shows that the data has missing values
+## these missing values are called 'Missing'
+
+# converting records with 'Missing' to n/a
+
+### ALSO FIND OUT HOW MANY ATTRIBUTES ARE ZERO, WHICH EQUALS N/A
+laptop.data[ laptop.data == "Missing" ] <- NA
+
+#COMMENTING THIS OUT TO SAVE SPACE. 
+# summarizing na's
+#print("Summary of null values in different columns")
+
+#colSums(is.na(laptop.data))
+# We need to convert a few columns
+ 
+```
+
+## Converting Laptop Price to USD for Better Understanding
+
+The information in this data set was pulled from Flipkart, so the
+prices are in Indian rupees. Although it was not necessary for modeling,
+we converted all prices from rupees to USD using a 1 to 0.013 ratio
+(current exchange rate as of 4/12/22) to make it easy for us to understand.
+
+```{r data clean up part 1, echo=FALSE, results="hide"}
+
+#Convert rupees to dollars based on 1:0.013 conversion rate
+laptop.data$latest_price <- laptop.data$latest_price*0.013
+laptop.data$old_price <- laptop.data$old_price*0.013
+```
+
+## Applying Log Transform to the Target Variable
+
+Next we studied our target variable a bit closer and observed the
+following distribution:
+
+```{r price histogram,  echo=FALSE, cache=TRUE}
+#histogram of latest price
+d <- density(laptop.data$latest_price)
+plot(d, main="Kernel Density of Latest Price")
+polygon(d, col="red", border="blue")
+```
+
+As you can see, our target variable is right skewed which prompted us
+to we apply a log transformation and create a new column called
+log_latest_price.
+
+```{r data clean up part 2,  echo=FALSE, cache=TRUE}
+#apply log transform
+laptop.data$log_latest_price <- log(laptop.data$latest_price)
+## kernel distribution after transformation
+d <- density(laptop.data$log_latest_price)
+plot(d, main="Kernel Density of Log Latest Price")
+polygon(d, col="red", border="blue")
+```
+
+This transformation makes the data close to normal (shown above), so
+we will be using log_latest_price as our target y variable for the rest
+of our analysis.
+
+## Missing Value Treatment:
+
+We saw that display sizes had many missing records and we know from our
+intuition that display sizes impact pricing of a laptop (i.e., Macbook 17inch
+more expensive than Macbook 13inch). So, we created a new column in the
+dataframe called "Display Size Given?" and populated it with "Yes" or
+"No" values. We then replaced any missing display size values with the
+average of display size from all available records. In addition to a Y/N
+column, we wanted to leverage the available records in the display size
+column, so we replaced the missing records with the column average. We also 
+grouped a few levels in some categorical variables (such as processor name, brand,
+etc.) to make the levels more dense and make them easier to model.
+
+We chose to drop some columns for which there were many NAs (i.e.,
+missing) or variables that did not seem to be useful for our use case: (1) model, 
+(2) processor_gnrtn, (3) discount, and (4) old_price. We felt comfortable
+removing the first 2 columns from the list above because a laptop's
+model is dependent on the laptop brand which we were already
+considering, while processor's generation is reflected in the processor
+name (3 in i3 represents generation). We did not want to use other
+pricing related variables in our predictive models and so we removed
+discount and old_price variables. We wanted to make sure that we can
+predict the price of a laptop given it's attributes and not be dependent
+on discount or old listed price from a single e-commerce platform.
+
+After applying all cleanup and variable selection, we created a new
+dataframe **laptop.data.clean** for the rest of this analysis. 
+
+```{r data clean up part 3, echo=FALSE, cache=TRUE}
+#need to add a column about whether display size is provides (Y/N)
+#then need to interpolate an average display size for the entries 
+## that are missing that data.
+
+laptop.data["display_size_given"] <- laptop.data$display_size
+laptop.data$display_size_given[!is.na(laptop.data$display_size_given)] <- "Yes"
+laptop.data$display_size_given[is.na(laptop.data$display_size_given)] <- "No"
+
+#replace all NA's in the column with the column mean
+laptop.data$display_size <- as.numeric(laptop.data$display_size)
+laptop.data$display_size <- round(na.aggregate(laptop.data$display_size),2)
+
+## Turning brand into a smaller multilevel
+## brand grouping - acer, apple, asus, dell, hp,lennovo, msi , others
+
+laptop.data$brand <- tolower(laptop.data$brand)
+
+laptop.data$brand <- ifelse(laptop.data$brand %in% c("acer",
+                                                   "apple", "asus", "dell", 
+                                                   "hp","lennovo", "msi"),
+                            laptop.data$brand,"other")
+
+## Turning processor into a smaller multilevel
+## brand grouping - amd, intel, others
+
+laptop.data$processor_brand <- tolower(laptop.data$processor_brand)
+
+laptop.data$processor_brand <- ifelse(laptop.data$processor_brand %in% c("amd",
+                                                   "intel"),
+                            laptop.data$processor_brand,"other")
+## turning ram_gb into 2 levels
+laptop.data$ram_gb_cat <- ifelse(as.numeric(laptop.data$ram_gb)<=8,
+                            "less_than_8","greater_than_8")
+
+## turning ssd into 2 levels
+laptop.data$ssd<-as.numeric(laptop.data$ssd)
+laptop.data$ssd_cat <- ifelse(laptop.data$ssd < 1024.0,
+                            "less_than_1gb","greater_than_1gb")
+
+## turning hdd into 2 levels
+laptop.data$hdd<-as.numeric(laptop.data$hdd)
+laptop.data$hdd_cat <- ifelse(laptop.data$hdd < 1024.0,
+                            "low_hdd","high_hdd")
+
+## Turning processor name into a smaller multilevel
+## processor grouping- acer, apple, asus, dell, hp,lennovo, msi , others
+
+laptop.data$processor_name <- tolower(laptop.data$processor_name)
+
+laptop.data$processor_name <- ifelse(laptop.data$processor_name %in% c("celeron dual",
+                                                   "core i3", "core i5", "core i7", 
+                                                   "m1","pentium quad", 
+                                                   "ryzen 3","ryzen 5",
+                                                   "ryzen 7","ryzen 9"),
+                            laptop.data$processor_name,"other")
+
+#the "discount" column does not make sense and will not be useful. we should drop it.
+# There are many n/a or missing records for 2 variables-
+## model, processor_gnrtn
+
+## It might be fine to remove these columns from the analysis as they don't 
+#add any new info
+## model is dependent on brand and processor and processor generation is 
+## reflected in the processor
+
+## Afer all clean up we are creating a fresh data as follows
+laptop.data.clean <-laptop.data[c(1,3,4,7,10,11,12,13,14,15,16,17,21,22,23,24,25,26,27,28)]
+
+```
+
+## Clustering the Laptops Based on Performance Attributes
+
+We believed it would be beneficial to perform cluster analysis on our data set.
+We know that RAM, ssd, and Graphic Card memory are common performance attributes
+that buyers consider when determining if a laptop would be suitable for their 
+use case. We extracted these three columns to conduct cluster analysis as shown
+in the plots below.
+
+```{r clustering part 1,  echo=FALSE, cache=TRUE}
+## taking specific columns
+tmp.laptop.data.clean <- laptop.data[,c(6,8,12)]
+# 
+# # convert these columns into numeric
+tmp.laptop.data.clean$ram_gb<- as.numeric(tmp.laptop.data.clean$ram_gb)
+tmp.laptop.data.clean$ssd<- as.numeric(tmp.laptop.data.clean$ssd)
+tmp.laptop.data.clean$graphic_card_gb<- as.numeric(
+  tmp.laptop.data.clean$graphic_card_gb)
+# 
+# 
+# #### Standardize the data
+tmp.laptop.data.clean <- scale(tmp.laptop.data.clean)
+rownames(tmp.laptop.data.clean) <- paste(laptop.data.clean$brand,",",
+                              c(1:length(laptop.data.clean$brand)),sep="")
+# 
+# 
+# ## ----fig.width=8,fig.height=6,out.width='0.80\\linewidth',eval=TRUE, echo=TRUE----
+k1 <- kmeans(tmp.laptop.data.clean, centers = 2, nstart = 25)
+fviz_cluster(k1, data = tmp.laptop.data.clean, labelsize=6)
+# 
+# 
+# ## --- fig.width=8,fig.height=6,out.width='0.80\\linewidth',eval=TRUE, echo=TRUE----
+k2 <- kmeans(tmp.laptop.data.clean, centers = 4, nstart = 25)
+fviz_cluster(k2, data = tmp.laptop.data.clean, labelsize=6)
+# 
+# 
+#COMMENTING OUT TO SAVE SPACE
+# #### Optimal cluster estimation via the elbow method
+fviz_nbclust(tmp.laptop.data.clean, kmeans, method = "wss")
+# 
+# ## clustering based on gap statistics
+# #### Optimal cluster estimation via the Gap statistic method
+# #### Calculate the statistic
+gap_stat <- clusGap(tmp.laptop.data.clean, FUN = kmeans, nstart = 25,
+                    K.max = 20, B = 50)
+# 
+# 
+# ## ----fig.23, fig.width=8,fig.height=6,out.width='0.70\\linewidth',eval=TRUE, echo=TRUE----
+# #### Visualize the answer.					
+fviz_gap_stat(gap_stat)
+```
+
+We can see from above plots that the chosen attributes are able to
+cluster our laptops into cleanly separable clusters. We started by
+building clusters with 2 and 4 centers and then applied the elbow method and
+gapstatistics to learn that the optimal number of clusters possible from
+our attributes would be 9. Therefore, we finally created clusters with 9
+centers using the K-means method. Below is a visual:
+
+```{r optimal clusters,  echo=FALSE, cache=TRUE}
+# 
+# ## based on above it seems like 9 is the optimal number of clusters. 
+## Let us plot 9 clusers
+k3 <- kmeans(tmp.laptop.data.clean, centers = 9, nstart = 25)
+fviz_cluster(k3, data = tmp.laptop.data.clean, labelsize=6)
+# 
+
+```
+
+Upon visually inspecting the clusters, we realized that these groupings
+across RAM, ssd, and graphics card is possibly an indication of the use
+cases (such as gaming vs. office use vs. personal use) of the laptops in
+each groups. We expect a natural shakeout of high-end, high-price laptops all the
+way down to low-end, low-price laptops (along with multiple other "buckets" in between).
+
+## Building a Feature Based on the Clusters Created
+
+We had previously converted ram, ssd and graphic card into denser
+multilevel categorical variables. We felt that the the clusters created
+based on their raw values would provide additional predictive power over
+the previously created variables. Hence, we turned these clusters into a
+feature with 9 levels for our predictive models. See below the number of
+records in each of the nine levels:
+
+```{r Adding clusters as a feature,  echo=FALSE, cache=TRUE}
+laptop.data.clean['cluster'] <- as.factor( k3$cluster)
+table(laptop.data.clean$cluster)
+```
+
+# Predictive Analysis
+
+## Overview of the Approaches
+
+To predict the price of a laptop, we explored the following techniques:
+
+1.  Stepwise AIC/Stepwise BIC
+2.  Regularized Regression
+3.  Decision Trees
+4.  Ensemble : Random Forest
+5.  Ensemble : Tuned XGBoost
+
+#### Splitting Data Into Train and Validation
+
+We split our clean dataframe (**laptop.data.clean**) into training and
+validation (holdout) subsets. We used 2/3rd of the records for training
+and 1/3rd for validation. The same validation dat aset was used for all
+models for calculating R\^2 and RMSE's.
+
+```{r splitting dataset into training and validation,  echo=FALSE, cache=TRUE}
+train.indices <- sample(nrow(laptop.data.clean), floor(nrow(laptop.data.clean)/1.5), replace = FALSE)
+validation.indices <- seq(nrow(laptop.data.clean))[-train.indices]
+#### Build the data sets
+pred.laptop.train <- laptop.data.clean[train.indices,]
+pred.laptop.train <- pred.laptop.train[,c(16,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,17,18,19,20,21)]
+pred.laptop.validation <- laptop.data.clean[validation.indices,]
+pred.laptop.validation <- pred.laptop.validation[,c(16,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,17,18,19,20,21)]
+```
+## Stepwise Regression
+
+### Comparing AIC and BIC
+
+From our validation metrics, we can see that StepAIC is a slightly better
+stepwise approach if we were to use a linear model to predict laptop
+prices. Below is a brief summary of the R\^2 and RMSE. We wanted to look
+at the validation metrics at both log scale and original scale. Although
+our underlying model is optimizing at the log scale, we would care more
+about about actual prices and how far we would be from them with our
+predictions. Our R\^2 for both stepAIC and stepBIC are fairly high (log scale)
+indicating that our predictions and actuals are somewhat correlated. Additionally
+our RMSE in the log scale is fairly small indicating that we have a fairly
+good model. The larger discrepancy in RMSE in regular scale is possibly
+due to outliers (i.e., very highly priced laptops).
+
+**StepAIC Model Fit Summary:**
+
+[1] "The R^2 value of stepAIC is 0.804889136995938"
+[1] "The RMSE value of stepAIC is 253.418380673218"
+[1] "The R^2 value of stepAIC in log scale is 0.857404190399198"
+[1] "The RMSE value of stepAIC in log scale is 0.190957188483678"
+
+**StepBIC Model Fit Summary:**
+
+[1] "The R^2 value of stepBIC is 0.799925677459252"
+[1] "The RMSE value of stepBIC is 256.653973304625"
+[1] "The R^2 value of stepBIC in log scale is 0.85636750739433"
+[1] "The RMSE value of stepBIC in log scale is 0.191323071789122"
+
+### Coefficients and their interpretations:
+
+The annova analysis we conducted (shown below) identifies the list of significant variables and the
+coefficients show that certain levels in categorical variables are
+significant whereas others are not. It is good to see that the presence of
+clusters is significant for the model. This is a further validation that
+our feature engineering was an useful trick. Also, both display size
+given (Y/N) and display size turned out be significant. StepwiseBIC had
+29 significant variables (counting only stat sig ones), whereas stepwiseAIC 
+picked 30 which is expected as BIC punishes for complexity more than AIC. (Note:
+Multi-levels are counted as separate variables)
+
+```{r stepwise regression,  echo=FALSE, cache=TRUE}
+# Code to calculate R^2 on the validation data.
+r.sqrd.rf.def <- function(val.preds.rf,validation){
+  r.sqrd.rf <- (cor(exp(val.preds.rf), exp(validation)))^2
+  return(r.sqrd.rf)
+}
+
+# R^2 in log scale
+r.sqrd.rf.def.log <- function(val.preds.rf,validation){
+  r.sqrd.rf <- (cor(val.preds.rf, validation))^2
+  return(r.sqrd.rf)
+}
+
+# Code to calculate RMSE on the validation data.
+rmse.rf.def <- function(val.preds.rf, validation){
+ee.rf<-data.frame("predictions" = val.preds.rf, "log_latest_price" = validation)
+ee.rf$se<-(exp(ee.rf$log_latest_price)-exp(ee.rf$predictions))^2
+rmse.rf<-(sum(ee.rf$se)/nrow(ee.rf))^.5
+return(rmse.rf)
+}
+
+# rmse in log scale
+rmse.rf.def.log <- function(val.preds.rf, validation){
+ee.rf<-data.frame("predictions" = val.preds.rf, "log_latest_price" = validation)
+ee.rf$se<-(ee.rf$log_latest_price-ee.rf$predictions)^2
+rmse.rf<-(sum(ee.rf$se)/nrow(ee.rf))^.5
+return(rmse.rf)
+}
+
+#stepwise regression using AIC
+lm.min <- lm(log_latest_price ~ 1, data = pred.laptop.train)
+lm.max <- lm(log_latest_price ~ ., data = pred.laptop.train) # The largest model. 
+
+lm.out.aic <- stepAIC(lm.min, # The initial model
+                       scope = list(upper = lm.max, lower = lm.min), 
+                       k = 2, # This is Akaike
+                       trace = FALSE) # Get information as we proceed
+
+#stepwise regression using BIC
+lm.out.bic <- stepAIC(lm.min, # The initial model
+                       scope = list(upper = lm.max, lower = lm.min), 
+                       k = log(dim(pred.laptop.train)[1]), # This is BIC
+                       trace = FALSE) # Get information as we proceed
+
+#COMMENTING OUT TO SAVE SPACE
+#summary(lm.out.aic)
+anova(lm.out.aic)
+
+#RMSE's on validation data set:
+validation.preds.stepaic <- predict(lm.out.aic, newdata = pred.laptop.validation, type = c("response"))
+```
+
+```{r stepaic performance, echo=FALSE, cache=TRUE}
+print(paste("The R^2 value of stepAIC is", 
+             r.sqrd.rf.def(validation.preds.stepaic,pred.laptop.validation[1])))
+print(paste("The RMSE value of stepAIC is", 
+             rmse.rf.def(validation.preds.stepaic,pred.laptop.validation[1])))
+print(paste("The R^2 value of stepAIC in log scale is", 
+             r.sqrd.rf.def.log(validation.preds.stepaic,pred.laptop.validation[1])))
+print(paste("The RMSE value of stepAIC in log scale is", 
+             rmse.rf.def.log(validation.preds.stepaic,pred.laptop.validation[1])))
+
+summary(lm.out.bic)
+anova(lm.out.bic)
+
+validation.preds.stepbic <- predict(lm.out.bic, newdata = pred.laptop.validation, type = c("response"))
+```
+
+```{r stepbic performance, echo=FALSE, cache=TRUE}
+print(paste("The R^2 value of stepBIC is", 
+             r.sqrd.rf.def(validation.preds.stepbic,pred.laptop.validation[1])))
+print(paste("The RMSE value of stepBIC is", 
+             rmse.rf.def(validation.preds.stepbic,pred.laptop.validation[1])))
+print(paste("The R^2 value of stepBIC in log scale is", 
+             r.sqrd.rf.def.log(validation.preds.stepbic,pred.laptop.validation[1])))
+print(paste("The RMSE value of stepBIC in log scale is", 
+             rmse.rf.def.log(validation.preds.stepbic,pred.laptop.validation[1])))
+```
+### Residuals
+
+The residuals seems to be aligned with assumptions of linear regression
+(normally distributed, centered around 0, and equal variance). The qq
+plot showcases presence of heavy tails but it does not seem to be a big
+concern from the plot.
+
+
+```{r residuals of stepwise regression, echo=FALSE, cache=TRUE}
+#### Taking only residuals from AIC
+aic.resids <- residuals(lm.out.aic)
+
+# make a histogram
+hist(aic.resids)
+
+# Make a normal quantile plot of the residuals
+qqnorm(aic.resids)
+qqline(aic.resids)  
+
+# Plot residuals against weight
+plot(x = pred.laptop.train$log_latest_price, y = aic.resids)
+```
+
+## Regularized Regression
+
+### Analysis - Validation Metrics
+
+We applied a lasso regression to see if we could build a model with fewer
+features. We chose the penalty multiple (lambda) and number of features
+based on 1 standard error criteria. We found that while lasso could
+provide a fairly good model (high r square and low RMSE), it wasn't
+better than our Stepwise regression approach.
+
+**Regularized Regression Model Fit Summary:**
+
+[1] "The R^2 value of regularized regression is 0.739109086771972"
+[1] "The RMSE value of regularized regression is 296.652788037578"
+[1] "The R^2 value of regularized regression in log scale is 0.787245668133689"
+[1] "The RMSE value of regularized regression in log scale is 0.232685415075645"
+
+### Coefficients and Their Interpretations:
+
+It is interesting to observe that lasso gave us 29 significant variables
+which is similar to our best stepwise regression (stepAIC). Cluster
+seems to be as important for the regularized regression as it was for
+stepwise regression. However, regularized regressions shrunk display
+size given (Y/N) unlike stepwise regression.
+
+```{r regularized regression, echo=FALSE, cache=TRUE}
+# Build a formula
+glmnet.formula <- as.formula(log_latest_price ~ .)
+# Then create the design matrix to use in glmnet
+glmnet.design.matrix <- model.matrix(glmnet.formula, data = pred.laptop.train)
+## How big is this matrix?
+
+dim(glmnet.design.matrix)
+
+# Run the lasso 
+glmnet.cv.laptop.out <- cv.glmnet(glmnet.design.matrix, 
+                     y = pred.laptop.train$log_latest_price,
+                     family = c("gaussian"), 
+                     type.measure="mse", # the model selection criteria
+                     alpha = 1) # The Lasso regression
+
+
+## ----nsb.lasso1,fig.width=6,fig.height=4,out.width='.75\\linewidth',eval=TRUE, echo=TRUE----
+
+plot(glmnet.cv.laptop.out)
+
+saved.coef <- coef(glmnet.cv.laptop.out, s=c("lambda.1se"))
+
+dim(saved.coef)
+chosen.vars <- data.frame(name = saved.coef@Dimnames[[1]][saved.coef@i + 1], 
+                          coefficient = saved.coef@x)
+
+
+print(paste("The lasso regression chose", dim(chosen.vars)[1]-1,
+            "variables and 1 intercept")) 
+
+
+print(saved.coef)
+
+#RMSE's on validation dataset:
+glmnet.formula2 <- as.formula(log_latest_price ~ .)
+glmnet.design.matrix.validation <- model.matrix(glmnet.formula2,
+                                                data = pred.laptop.validation)
+
+validation.preds.regularizedreg <- predict(glmnet.cv.laptop.out,
+                                  newx = glmnet.design.matrix.validation,
+                                  type = c("response"))
+
+print(paste("The R^2 value of regularized regression is", 
+             r.sqrd.rf.def(validation.preds.regularizedreg,
+                           pred.laptop.validation[1])))
+print(paste("The RMSE value of regularized regression is", 
+             rmse.rf.def(as.numeric(validation.preds.regularizedreg),
+                         pred.laptop.validation[1])))
+print(paste("The R^2 value of regularized regression in log scale is", 
+             r.sqrd.rf.def.log(validation.preds.regularizedreg,
+                           pred.laptop.validation[1])))
+print(paste("The RMSE value of regularized regression in log scale is", 
+            rmse.rf.def.log(as.numeric(validation.preds.regularizedreg),
+                          pred.laptop.validation[1])))
+```
+
+## Decision Trees
+
+### Analysis - Validation Metrics Across Simple and Pruned Trees
+
+We started by building a simple tree with default parameters and then
+pruned it based on complexity parameter (cp). Pruning did not change
+anything as we got the exact same tree after pruning. Additionally the R\^2
+and RMSE for a single tree seemed to be worse compared to linear models.
+
+```{r using decision trees,  echo=FALSE, cache=TRUE}
+#Using a decision tree to predict laptop price
+#Use "rpart" to create  a decision tree to predict laptop price using training data
+
+# Code to build the decision tree on the training data.
+# Save the fitted tree and have a look at it
+tree.out.1 <-rpart(log_latest_price ~ ., data = pred.laptop.train,
+                   parms  = list(split="information"),
+                   control = rpart.control(minsplit=20))
+
+summary(tree.out.1)
+
+#Create a plot of the classification tree.
+#Code to plot the tree.
+plot(tree.out.1, uniform=TRUE, branch=0.6, margin=0.05)
+text(tree.out.1, all=TRUE, use.n=TRUE)
+title("Basic Laptop Price Regression Tree")
+```
+
+**Basic Tree and Pruned Tree Model Fit Summary (values identical):**
+
+[1] "The R^2 value of pruned tree is 0.648006191517393"
+[1] "The RMSE value of pruned tree is 342.789650527593"
+[1] "The R^2 value of pruned tree in log scale is 0.737397757156823"
+[1] "The RMSE value of pruned tree in log scale is 0.261736301177269"
+
+```{r basic tree model fit, echo=FALSE, cache=TRUE}
+##############################################
+# This will predict on the data used to build the tree.
+# But if you had new data to work with, you can pass that in via the
+# "newdata" argument, just like in regression.
+laptop.tree1.preds <- predict(tree.out.1,newdata =pred.laptop.validation ) 
+
+#COMMENTING OUT TO SAVE SPACE. REDUNDANT WITH PRUNED TREE
+print("Basic Decision Tree Model Summary:")
+print(paste("The R^2 value of basic tree is",
+             r.sqrd.rf.def(laptop.tree1.preds,
+                           pred.laptop.validation[1])))
+print(paste("The RMSE value of basic tree is",
+            rmse.rf.def(laptop.tree1.preds,
+                         pred.laptop.validation[1])))
+print(paste("The R^2 value of basic tree in log scale is",
+             r.sqrd.rf.def.log(laptop.tree1.preds,
+                           pred.laptop.validation[1])))
+print(paste("The RMSE value of basic tree in log scale is",
+             rmse.rf.def.log(laptop.tree1.preds,
+                         pred.laptop.validation[1])))
+
+#### Look at how well the tree cross-validated for different values of alpha:
+#### (cp stands for "complexity parameter" here).
+
+printcp(tree.out.1)
+
+#### The lowest cross validation error is for a tree with 9 splits.
+# Get index of CP with lowest xerror
+opt <- which.min(tree.out.1$cptable[,"xerror"])
+#get its value
+best.cp <- tree.out.1$cptable[opt, "CP"]
+
+# Confirm we got it correct:
+#COMMENTING OUT TO SAVE SPACE
+print(best.cp)
+print(tree.out.1$variable.importance)
+
+# Prune the tree, using the best value for "cp"
+pruned.laptop.tree <- prune(tree.out.1,cp = best.cp)
+# Plot the pruned tree
+plot(pruned.laptop.tree, uniform=TRUE, branch=0.6, margin=0.05)
+text(pruned.laptop.tree,all=TRUE, use.n=TRUE)
+title("Pruned Laptop Price Regression Tree")
+
+laptop.pruned.tree.preds <- predict(pruned.laptop.tree,newdata=
+                                      pred.laptop.validation ) 
+```
+```{r pruned tree fit, echo=FALSE, cache=TRUE}
+print(paste("The R^2 value of pruned tree is", 
+             r.sqrd.rf.def(laptop.pruned.tree.preds,
+                           pred.laptop.validation[1])))
+print(paste("The RMSE value of pruned tree is", 
+             rmse.rf.def(laptop.pruned.tree.preds,
+                         pred.laptop.validation[1])))
+print(paste("The R^2 value of pruned tree in log scale is", 
+             r.sqrd.rf.def.log(laptop.pruned.tree.preds,
+                           pred.laptop.validation[1])))
+print(paste("The RMSE value of pruned tree in log scale is", 
+             rmse.rf.def.log(laptop.pruned.tree.preds,
+                         pred.laptop.validation[1])))
+```
+
+Below is a table of variable importance from the pruned decision tree model:
+```{r printing variable importance, echo=FALSE, cache=TRUE}
+#Now obtain the variable importance output, to see which predictors are most important. 
+#Code to obtain variable importance.
+print(pruned.laptop.tree$variable.importance)
+```
+## Ensemble Random Forest with Default Parameters
+
+### Analysis of Validation Metrics Compared to Linear Models
+
+Our first attempt at an ensemble method gave us better results than a
+single tree. It was also superior to our initial StepAIC model.
+
+**Random Forest Model Fit Summary:**
+
+[1] "The R^2 value of Random Forest is 0.783106449815662"
+[1] "The RMSE value of Random Forest is 275.955222895206"
+[1] "The R^2 value of Random Forest in log scale is 0.856022265086323"
+[1] "The RMSE value of Random Forest in log scale is 0.191797362743207"
+
+### Important variables and their interpretations:
+
+Processor name followed by cluster and ssd_cat had the most predictive
+power (most impact on %IncMSE). Our feature creation is further
+validated here.
+
+```{r building a random forest,  echo=FALSE, cache=TRUE}
+
+#The goal of this question is to build a random forest to predict the price 
+# of laptop, as a function of various attributes.
+
+#### Build a random forest on the training dataset
+#Use the randomForest command, with all default parameter values to model 
+
+
+# Code to make and save a random forest on the training data.
+laptop.train.rf <- randomForest(log_latest_price ~ .,  # Throw in the kitchen sink
+                       data = pred.laptop.train, # The data set
+                       importance=TRUE) # This will allow us to see variable importance
+
+#### Variable importance
+#Code to identify the most "important" variable with regard to the forest.
+
+print(laptop.train.rf$importance)
+varImpPlot(laptop.train.rf)
+
+optimum <- which.max(laptop.train.rf$importance[,"%IncMSE"])
+opt.var <- laptop.train.rf$importance[optimum,0,drop=FALSE]
+
+print("The most predictive variable with regard to price is:")
+print(opt.var)
+
+#### Predict prices on the validation data set
+#Code to predict and save the predictions on the validation data set
+
+val.preds.rf <- predict(laptop.train.rf, # The forest
+                 newdata = pred.laptop.validation, # The values of x to do prediction at
+                 type = c("response")
+                 )
+
+# Code to plot the predictions against the actual values
+
+plot(val.preds.rf, pred.laptop.validation$log_latest_price,
+     main = "Plot of Predictions vs. Actual for Laptop Price",           
+     xlab = "Log Predicted price of laptop", 
+     ylab = "Log Actual price of laptop")
+
+#### $R^2$ and RMSE on the validation data
+```
+```{r RF fit, echo=FALSE, cache=TRUE}
+print(paste("The R^2 value of Random Forest is", 
+             r.sqrd.rf.def(val.preds.rf,pred.laptop.validation[1])))
+print(paste("The RMSE value of Random Forest is", 
+             rmse.rf.def(val.preds.rf,pred.laptop.validation[1])))
+print(paste("The R^2 value of Random Forest in log scale is", 
+             r.sqrd.rf.def.log(val.preds.rf,pred.laptop.validation[1])))
+print(paste("The RMSE value of Random Forest in log scale is", 
+             rmse.rf.def.log(val.preds.rf,pred.laptop.validation[1])))
+```
+
+## Ensemble Method - Use Caret to Set Up a Computer Experiment and Tune XGBoost
+
+### Analysis of Validation Metrics and Tuning Strategy Used
+
+Next, we decided to expand our analysis to using XGBoost (known to have
+exceptional predictive power). We used the caret package to set up a grid and
+ran an experiment across a few parameters to find one of the best tuned
+XGBoost. XGBoost ended up delivering on its promise and gave us the best
+model (lowest RMSE and highest R\^2) of all the ones we had tried out:
+
+**XGboost Model Fit Summary:**
+
+[1] "The R^2 value for XGboost is 0.848757272940201"
+[1] "The RMSE value of XGboost is 227.363013941365"
+[1] "The R^2 value for XGboost in log scale is 0.875737860057181"
+[1] "The RMSE value of XGboost in log scale is 0.177554536560491"
+
+Below are the tuning steps we followed:
+
+1.  We defined our tuning parameters to be chosen via 5 fold
+    cross-validation repeated 5 times.
+2.  We ran 100 iterations of boosting while running our grid search
+    across various hyper parameters.
+3.  We chose a learning rate of 0.1 and searched for the max depth of
+    trees by reviewing our reduction in RMSE. This gave us a max-depth
+    of 9.
+
+### Important variables and their interpretations:
+
+Analysis of important variables showed that laptop cluster8 was providing the
+best predictive power followed by ram being below 1gb. Other variables such as ram,
+display size, and ram < 1 gb were also important. All of the important variables
+were suggesting that our clustering exercise and various treatments on multilevel 
+variables and missing data treatment were useful.
+
+We also applied a partial dependence calculation to understand the
+direction/sign of associations across the top variables. Our partial
+dependence plot showcased the following :
+
+1.  We saw that higher performance factors such as RAM being higher than
+    8 gb and ssd greater than 1 gb were associated with highly priced
+    laptops. Additionally, laptops with higher graphic card specs had higher
+    average prices.
+2.  It is interesting to observe that as display sizes increased beyond
+    15.5 inches average prediction of prices went up a lot and then it
+    came down when the display size was around 17.5 inches. This is
+    perhaps an indication that customers are willing to pay higher for
+    an optimal display size of laptops.
+3.  Lastly laptops not belonging to cluster8 had higher average price
+    predictions. We investigated the reasons behind this a bit further
+    and observed that the centers across the 3 variables used for
+    clustering (ram, sdd and graphic card) were usually lower for
+    cluster8. Hence, we can conclude that low performance laptops are
+    priced lower.
+
+```{r using the caret package,  echo=FALSE, cache=TRUE}
+
+#### Create a formula for the model
+rf.formula <- as.formula("log_latest_price ~.-1")
+# Then create the design matrix
+rf.design.matrix <- model.matrix(rf.formula, data = pred.laptop.train)
+# Add in the y-variable
+rf.train.design.data <- cbind(log_latest_price = 
+                                pred.laptop.train$log_latest_price, 
+                              rf.design.matrix)
+
+## ---------------------------------------------------------
+fitControl <- trainControl(## 5-fold Crossvalidation
+  method = "repeatedcv",   
+  number = 5, # With 5 folds.
+  repeats = 5 )
+
+regGrid1 <- expand.grid(
+  nrounds = 100,          # Max number of boosting iterations
+  max_depth = seq(1,20,2), # How deep the tree can go. 
+  eta = 0.1,              # The learning rate
+  gamma = 0,              # Minimum loss reduction to make a further partition on a leaf node
+  colsample_bytree = 0.5, # Proportion of columns to subsample (a la random forest)
+  min_child_weight = 1,   # For regression, the minimum leaf node size 
+  subsample = 1           # Proportion of rows to subsample
+)
+
+regFit1 <- train(method = "xgbTree", 
+                 trControl = fitControl,
+                 x = rf.design.matrix,  
+                 y = pred.laptop.train$log_latest_price, 
+                 tuneGrid = regGrid1)	
+
+plot(regFit1)
+```
+
+```{r validation of xgboost,  echo=FALSE, cache=TRUE}
+## check feature importance
+
+varImp(regFit1) 
+plot(varImp(regFit1))
+
+## Validation of the boosted tree
+xgboost.validation.design.matrix <- model.matrix(rf.formula, 
+                                            data = pred.laptop.validation)
+
+new.val.preds.xgboost <- predict(regFit1, # The xgboost
+                  newdata = xgboost.validation.design.matrix)
+```
+```{r xgboost fit, echo=FALSE, cache=TRUE}
+#Code to calculate and print R^2
+print(paste("The R^2 value for XGboost is", 
+             r.sqrd.rf.def(new.val.preds.xgboost,
+                           pred.laptop.validation[1])))
+# #Code to calculate and print RMSE
+print(paste("The RMSE value of XGboost is",
+            rmse.rf.def(new.val.preds.xgboost,
+                        pred.laptop.validation[1])))
+# #Code to calculate and print R^2
+print(paste("The R^2 value for XGboost in log scale is", 
+             r.sqrd.rf.def.log(new.val.preds.xgboost,
+                           pred.laptop.validation[1])))
+# # # Code to calculate and print RMSE
+print(paste("The RMSE value of XGboost in log scale is",
+            rmse.rf.def.log(new.val.preds.xgboost,
+                        pred.laptop.validation[1])))
+
+```
+
+```{r partial dependence,  echo=FALSE, cache=TRUE}
+
+#COMMENTING THIS OUT TO SAVE SPACE
+library(pdp, quiet=TRUE)
+pdpratings <- partial(regFit1, pred.var=c("ssd_catless_than_1gb")) #
+plotPartial(pdpratings)
+# 
+
+pdpratings <- partial(regFit1, pred.var=c("graphic_card_gb")) #
+plotPartial(pdpratings)
+
+pdpratings <- partial(regFit1, pred.var=c("display_size")) #
+plotPartial(pdpratings)
+# 
+
+pdpratings <- partial(regFit1, pred.var=c("ram_gb_catless_than_8")) #
+plotPartial(pdpratings)
+# 
+
+pdpratings <- partial(regFit1, pred.var=c("cluster8")) #
+plotPartial(pdpratings)
+# 
+k3[["centers"]]
+```
+In conclusion, it is wise to review multiple predictive model methodologies when trying to 
+model a particular y variable as results can vary. While our best performing model (XGboost)
+is still not as accurate as we would like, it is clear that it is a powerful tool for
+predictive analysis. We are confident the models we presented could be improved with 
+the addition of other explanatory variables and more data points. 
